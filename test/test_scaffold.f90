@@ -24,6 +24,7 @@ program test_scaffold
   fixture = clear_process_fixture()
   if (fixture%active) error stop "new scaffold fixture should be inactive"
   if (fixture%ready) error stop "new scaffold fixture should not be ready"
+  if (fixture%setup_completed) error stop "new scaffold fixture should not start setup-complete"
   if (fixture%cleaned_up) error stop "new scaffold fixture should not start cleaned up"
   if (fixture%attempts /= 0) error stop "new scaffold fixture should have zero attempts"
   if (fixture%error_code /= FGOF_PROC_TEST_OK) error stop "new scaffold fixture should be ok"
@@ -33,6 +34,7 @@ program test_scaffold
 
   if (proc_test_backend_name() /= "fgof-process") error stop "backend name should explain the planned dependency"
   if (proc_test_error_name(FGOF_PROC_TEST_OK) /= "ok") error stop "error helper should map ok"
+  if (proc_test_error_name(23) /= "setup-failed") error stop "error helper should map setup failures"
   if (proc_test_error_name(30) /= "assertion-failed") error stop "error helper should map assertion failures"
   if (proc_test_error_name(999) /= "unknown") error stop "error helper should map unknown codes"
 end program test_scaffold

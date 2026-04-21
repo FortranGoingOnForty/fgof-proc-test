@@ -26,4 +26,5 @@ program test_fixture_cleanup
   if (fixture%active) error stop "failed fixture cleanup should leave the fixture inactive"
 
   if (.not. cleanup_fixture(fixture)) error stop "cleanup should remain callable after failure"
+  if (fixture%cleanup_result%stdout /= "CLEANED") error stop "repeat cleanup should preserve original cleanup result"
 end program test_fixture_cleanup

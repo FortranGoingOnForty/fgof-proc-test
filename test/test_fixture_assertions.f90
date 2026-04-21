@@ -9,6 +9,7 @@ program test_fixture_assertions
     assert_fixture_success, &
     cleanup_fixture, &
     clear_fixture_options, &
+    fixture_diagnostics, &
     make_fixture, &
     run_fixture
   use fgof_proc_test_types, only : fixture_options, process_fixture
@@ -37,9 +38,12 @@ program test_fixture_assertions
   if (assert_fixture_success(fixture)) error stop "success assertion should fail for nonzero exit"
   if (fixture%error_code /= FGOF_PROC_TEST_ERR_ASSERTION_FAILED) error stop "failed assertion should set assertion-failed"
   if (index(fixture%error_message, "complete successfully") <= 0) error stop "failed success assertion should explain the mismatch"
+  if (index(fixture%error_message, "fixture=assert-nonzero") <= 0) error stop "failed assertion should include fixture diagnostics"
+  if (index(fixture%error_message, "last_exit_code=7") <= 0) error stop "diagnostics should include the observed exit code"
 
   if (assert_fixture_stdout_contains(fixture, "missing")) error stop "stdout assertion should fail for missing text"
   if (fixture%error_code /= FGOF_PROC_TEST_ERR_ASSERTION_FAILED) error stop "failed output assertion should set assertion-failed"
+  if (index(fixture_diagnostics(fixture), "stderr=warn") <= 0) error stop "fixture diagnostics should include captured stderr"
 
   if (.not. cleanup_fixture(fixture)) error stop "nonzero fixture cleanup should still succeed"
 end program test_fixture_assertions
