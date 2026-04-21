@@ -15,6 +15,7 @@ program test_scaffold
   options = clear_fixture_options()
   if (options%timeout_ms /= 1000) error stop "default timeout should be 1000 ms"
   if (options%retries /= 0) error stop "default retries should be zero"
+  if (options%retry_delay_ms /= 0) error stop "default retry delay should be zero"
   if (.not. options%capture_output) error stop "capture_output should default true"
   if (.not. options%cleanup_on_failure) error stop "cleanup_on_failure should default true"
   if (allocated(options%ready_text)) error stop "ready_text should be unset by default"
@@ -32,5 +33,6 @@ program test_scaffold
 
   if (proc_test_backend_name() /= "fgof-process") error stop "backend name should explain the planned dependency"
   if (proc_test_error_name(FGOF_PROC_TEST_OK) /= "ok") error stop "error helper should map ok"
+  if (proc_test_error_name(30) /= "assertion-failed") error stop "error helper should map assertion failures"
   if (proc_test_error_name(999) /= "unknown") error stop "error helper should map unknown codes"
 end program test_scaffold
