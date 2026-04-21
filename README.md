@@ -12,8 +12,8 @@ catalog, but it is intended to stand on its own as a normal `fpm` package.
 Current v1 target:
 
 - build on `fgof-process` instead of re-implementing subprocess control
-- expose fixture options and process-test session state
-- support stable setup, teardown, retry, and cleanup flows
+- expose fixture options and process-fixture state
+- support stable start, readiness, retry, and cleanup flows
 - stay focused on process-level testing, not general assertion frameworks
 
 Future scope:
@@ -24,11 +24,14 @@ Future scope:
 
 ## Status
 
-Initial scaffold is in place.
+First real fixture lifecycle is in place.
 
 Tracked today:
 
 - public `fgof_proc_test` and `fgof_proc_test_types` modules
+- `make_fixture()`, `run_fixture()`, and `cleanup_fixture()` lifecycle helpers
+- readiness checks, retry tracking, and captured last-result state
+- cleanup-on-failure behavior for failing fixtures
 - initial fixture and options types
 - stable error constants with naming helpers
 - CI and `fpm test` baseline wiring
@@ -39,6 +42,8 @@ Tracked today:
 - `fgof-process` now gives us a strong base to build a cleaner fixture layer
 - many integration suites still hand-roll setup, polling, teardown, and cleanup
 - a focused package here can make app and tool testing much less fragile
+- current fixtures work well for one-shot process checks and setup or teardown
+  steps even before `fgof-process` grows async handles
 
 ## Public API Shape
 
@@ -57,15 +62,48 @@ Public constants:
 - `FGOF_PROC_TEST_OK`
 - `FGOF_PROC_TEST_ERR_INVALID_OPTIONS`
 - `FGOF_PROC_TEST_ERR_SPAWN_FAILED`
+- `FGOF_PROC_TEST_ERR_READINESS_FAILED`
 - `FGOF_PROC_TEST_ERR_CLEANUP_FAILED`
 - `FGOF_PROC_TEST_ERR_INTERNAL`
 
 Current public procedures:
 
+- `cleanup_fixture`
 - `clear_fixture_options`
 - `clear_process_fixture`
+- `fixture_ready`
+- `fixture_result`
+- `make_fixture`
 - `proc_test_backend_name`
 - `proc_test_error_name`
+- `run_fixture`
+
+## Quick Start
+
+```fortran
+program demo_proc_test
+  use fgof_process, only : shell
+  use fgof_proc_test, only : &
+    cleanup_fixture, clear_fixture_options, fixture_ready, make_fixture, run_fixture
+  use fgof_proc_test_types, only : fixture_options, process_fixture
+  implicit none
+
+  type(fixture_options) :: options
+  type(process_fixture) :: fixture
+
+  options = clear_fixture_options()
+  options%ready_text = "READY"
+
+  fixture = make_fixture("demo", shell("printf READY"), options)
+  if (run_fixture(fixture)) then
+    if (fixture_ready(fixture)) print *, "fixture is ready"
+  end if
+
+  if (.not. cleanup_fixture(fixture)) then
+    print *, fixture%error_message
+  end if
+end program demo_proc_test
+```
 
 ## Build And Test
 
@@ -86,6 +124,8 @@ That is the baseline verification command locally and in CI.
 - focused on process-fixture ergonomics, not full test-framework replacement
 - should sit cleanly beside `test-drive`, `vegetables`, or other assertion layers
 - `fgof-process` remains the subprocess backend underneath this package
+- current fixtures are synchronous and one-shot; persistent daemons and richer
+  async supervision should wait for later backend support
 
 ## License
 
