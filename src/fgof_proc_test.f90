@@ -110,7 +110,6 @@ contains
     type(process_options) :: run_options
     integer :: attempt
     integer :: max_attempts
-    logical :: cleanup_ok
 
     call clear_fixture_error(fixture)
     fixture%active = .false.
@@ -173,7 +172,7 @@ contains
       end if
     end do
 
-    if (fixture%options%cleanup_on_failure) cleanup_ok = cleanup_fixture(fixture)
+    if (fixture%options%cleanup_on_failure) call cleanup_after_failure(fixture)
   end function run_fixture
 
   logical function retry_fixture(fixture, retries, retry_delay_ms) result(success)
@@ -252,11 +251,18 @@ contains
       "active=" // logical_text(fixture%active) // nl // &
       "setup_completed=" // logical_text(fixture%setup_completed) // nl // &
       "cleaned_up=" // logical_text(fixture%cleaned_up) // nl // &
+      "setup_error_code=" // int_text(fixture%setup_result%error_code) // nl // &
       "setup_exit_code=" // int_text(fixture%setup_result%exit_code) // nl // &
+      "last_error_code=" // int_text(fixture%last_result%error_code) // nl // &
       "last_exit_code=" // int_text(fixture%last_result%exit_code) // nl // &
+      "cleanup_error_code=" // int_text(fixture%cleanup_result%error_code) // nl // &
       "cleanup_exit_code=" // int_text(fixture%cleanup_result%exit_code) // nl // &
+      "setup_stdout=" // fixture%setup_result%stdout // nl // &
+      "setup_stderr=" // fixture%setup_result%stderr // nl // &
       "stdout=" // fixture%last_result%stdout // nl // &
-      "stderr=" // fixture%last_result%stderr
+      "stderr=" // fixture%last_result%stderr // nl // &
+      "cleanup_stdout=" // fixture%cleanup_result%stdout // nl // &
+      "cleanup_stderr=" // fixture%cleanup_result%stderr
   end function fixture_diagnostics
 
   logical function assert_fixture_success(fixture) result(success)
@@ -466,6 +472,30 @@ contains
     fixture%error_code = FGOF_PROC_TEST_OK
     fixture%error_message = ""
   end subroutine clear_fixture_error
+
+  subroutine cleanup_after_failure(fixture)
+    type(process_fixture), intent(inout) :: fixture
+    integer :: original_code
+    logical :: cleanup_ok
+    character(len=:), allocatable :: original_message
+    character(len=:), allocatable :: cleanup_failure_message
+    character(len=*), parameter :: nl = new_line('a')
+
+    original_code = fixture%error_code
+    original_message = fixture_message_text(fixture)
+    cleanup_ok = cleanup_fixture(fixture)
+
+    if (cleanup_ok) then
+      fixture%error_code = original_code
+      fixture%error_message = original_message
+      return
+    end if
+
+    cleanup_failure_message = fixture_message_text(fixture)
+    fixture%error_code = original_code
+    fixture%error_message = original_message // nl // &
+      "cleanup_failure=" // cleanup_failure_message
+  end subroutine cleanup_after_failure
 
   subroutine set_fixture_error(fixture, code, message)
     type(process_fixture), intent(inout) :: fixture
