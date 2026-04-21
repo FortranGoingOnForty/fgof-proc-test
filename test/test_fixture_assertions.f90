@@ -43,6 +43,8 @@ program test_fixture_assertions
 
   if (assert_fixture_stdout_contains(fixture, "missing")) error stop "stdout assertion should fail for missing text"
   if (fixture%error_code /= FGOF_PROC_TEST_ERR_ASSERTION_FAILED) error stop "failed output assertion should set assertion-failed"
+  if (index(fixture%error_message, "fixture stdout did not contain expected text") <= 0) error stop "second assertion should report its own failure text"
+  if (index(fixture%error_message, "fixture did not complete successfully") > 0) error stop "second assertion should not carry stale assertion diagnostics"
   if (index(fixture_diagnostics(fixture), "stderr=warn") <= 0) error stop "fixture diagnostics should include captured stderr"
 
   if (.not. cleanup_fixture(fixture)) error stop "nonzero fixture cleanup should still succeed"

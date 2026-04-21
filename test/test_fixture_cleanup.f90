@@ -12,6 +12,9 @@ program test_fixture_cleanup
 
   type(fixture_options) :: options
   type(process_fixture) :: fixture
+  character(len=*), parameter :: marker = "./fgof-proc-test-cleanup-marker.tmp"
+
+  call execute_command_line("rm -f " // marker)
 
   options = clear_fixture_options()
   options%timeout_ms = 500
@@ -27,4 +30,17 @@ program test_fixture_cleanup
 
   if (.not. cleanup_fixture(fixture)) error stop "cleanup should remain callable after failure"
   if (fixture%cleanup_result%stdout /= "CLEANED") error stop "repeat cleanup should preserve original cleanup result"
+
+  call execute_command_line("touch " // marker)
+  fixture = make_fixture( &
+    "cleanup-retry", &
+    shell("printf done"), &
+    options, &
+    shell("if [ -f '" // marker // "' ]; then rm -f '" // marker // "'; exit 1; else exit 0; fi"))
+
+  if (.not. run_fixture(fixture)) error stop "cleanup retry fixture should run successfully"
+  if (cleanup_fixture(fixture)) error stop "first cleanup should fail when the marker exists"
+  if (fixture%cleaned_up) error stop "failed cleanup should remain retryable"
+  if (.not. cleanup_fixture(fixture)) error stop "second cleanup should succeed after the marker is gone"
+  if (.not. fixture%cleaned_up) error stop "successful retry cleanup should mark the fixture cleaned"
 end program test_fixture_cleanup
