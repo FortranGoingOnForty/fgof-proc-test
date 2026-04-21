@@ -24,13 +24,15 @@ Future scope:
 
 ## Status
 
-First real fixture lifecycle is in place.
+Fixture lifecycle and first assertion layer are in place.
 
 Tracked today:
 
 - public `fgof_proc_test` and `fgof_proc_test_types` modules
 - `make_fixture()`, `run_fixture()`, and `cleanup_fixture()` lifecycle helpers
 - readiness checks, retry tracking, and captured last-result state
+- assertion helpers for exit codes and output checks
+- retry-delay support plus `retry_fixture()` convenience
 - cleanup-on-failure behavior for failing fixtures
 - initial fixture and options types
 - stable error constants with naming helpers
@@ -44,6 +46,8 @@ Tracked today:
 - a focused package here can make app and tool testing much less fragile
 - current fixtures work well for one-shot process checks and setup or teardown
   steps even before `fgof-process` grows async handles
+- assertion helpers keep common exit-code and output checks close to the fixture
+  state instead of scattering them through each test file
 
 ## Public API Shape
 
@@ -64,10 +68,16 @@ Public constants:
 - `FGOF_PROC_TEST_ERR_SPAWN_FAILED`
 - `FGOF_PROC_TEST_ERR_READINESS_FAILED`
 - `FGOF_PROC_TEST_ERR_CLEANUP_FAILED`
+- `FGOF_PROC_TEST_ERR_ASSERTION_FAILED`
 - `FGOF_PROC_TEST_ERR_INTERNAL`
 
 Current public procedures:
 
+- `assert_fixture_exit_code`
+- `assert_fixture_output_contains`
+- `assert_fixture_stderr_contains`
+- `assert_fixture_stdout_contains`
+- `assert_fixture_success`
 - `cleanup_fixture`
 - `clear_fixture_options`
 - `clear_process_fixture`
@@ -76,6 +86,7 @@ Current public procedures:
 - `make_fixture`
 - `proc_test_backend_name`
 - `proc_test_error_name`
+- `retry_fixture`
 - `run_fixture`
 
 ## Quick Start
@@ -93,6 +104,7 @@ program demo_proc_test
 
   options = clear_fixture_options()
   options%ready_text = "READY"
+  options%retry_delay_ms = 10
 
   fixture = make_fixture("demo", shell("printf READY"), options)
   if (run_fixture(fixture)) then
@@ -126,6 +138,8 @@ That is the baseline verification command locally and in CI.
 - `fgof-process` remains the subprocess backend underneath this package
 - current fixtures are synchronous and one-shot; persistent daemons and richer
   async supervision should wait for later backend support
+- assertion helpers are intentionally simple string and exit-code checks for now;
+  richer transcript assertions can sit above this package later
 
 ## License
 
