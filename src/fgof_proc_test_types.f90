@@ -11,11 +11,13 @@ module fgof_proc_test_types
   integer, parameter, public :: FGOF_PROC_TEST_ERR_SPAWN_FAILED = 20
   integer, parameter, public :: FGOF_PROC_TEST_ERR_READINESS_FAILED = 21
   integer, parameter, public :: FGOF_PROC_TEST_ERR_CLEANUP_FAILED = 22
+  integer, parameter, public :: FGOF_PROC_TEST_ERR_ASSERTION_FAILED = 30
   integer, parameter, public :: FGOF_PROC_TEST_ERR_INTERNAL = 99
 
   type, public :: fixture_options
     integer :: timeout_ms = 1000
     integer :: retries = 0
+    integer :: retry_delay_ms = 0
     logical :: capture_output = .true.
     logical :: cleanup_on_failure = .true.
     character(len=:), allocatable :: ready_text

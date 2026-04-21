@@ -14,6 +14,7 @@ module fgof_proc_test
     process_result, &
     run
   use fgof_proc_test_types, only : &
+    FGOF_PROC_TEST_ERR_ASSERTION_FAILED, &
     FGOF_PROC_TEST_ERR_CLEANUP_FAILED, &
     FGOF_PROC_TEST_ERR_INTERNAL, &
     FGOF_PROC_TEST_ERR_INVALID_OPTIONS, &
@@ -26,12 +27,18 @@ module fgof_proc_test
   private
 
   public :: &
+    FGOF_PROC_TEST_ERR_ASSERTION_FAILED, &
     FGOF_PROC_TEST_ERR_CLEANUP_FAILED, &
     FGOF_PROC_TEST_ERR_INTERNAL, &
     FGOF_PROC_TEST_ERR_INVALID_OPTIONS, &
     FGOF_PROC_TEST_ERR_READINESS_FAILED, &
     FGOF_PROC_TEST_ERR_SPAWN_FAILED, &
     FGOF_PROC_TEST_OK, &
+    assert_fixture_exit_code, &
+    assert_fixture_output_contains, &
+    assert_fixture_stderr_contains, &
+    assert_fixture_stdout_contains, &
+    assert_fixture_success, &
     cleanup_fixture, &
     clear_fixture_options, &
     clear_process_fixture, &
@@ -42,6 +49,7 @@ module fgof_proc_test
     proc_test_backend_name, &
     proc_test_error_name, &
     process_fixture, &
+    retry_fixture, &
     run_fixture
 
 contains
@@ -51,6 +59,7 @@ contains
 
     options%timeout_ms = 1000
     options%retries = 0
+    options%retry_delay_ms = 0
     options%capture_output = .true.
     options%cleanup_on_failure = .true.
     allocate(character(len=1) :: options%env_set(0))
@@ -137,10 +146,24 @@ contains
       else
         call map_process_error(fixture, fixture%last_result)
       end if
+
+      if (attempt < max_attempts .and. fixture%options%retry_delay_ms > 0) then
+        call sleep_milliseconds(fixture%options%retry_delay_ms)
+      end if
     end do
 
     if (fixture%options%cleanup_on_failure) cleanup_ok = cleanup_fixture(fixture)
   end function run_fixture
+
+  logical function retry_fixture(fixture, retries, retry_delay_ms) result(success)
+    type(process_fixture), intent(inout) :: fixture
+    integer, intent(in), optional :: retries
+    integer, intent(in), optional :: retry_delay_ms
+
+    if (present(retries)) fixture%options%retries = retries
+    if (present(retry_delay_ms)) fixture%options%retry_delay_ms = retry_delay_ms
+    success = run_fixture(fixture)
+  end function retry_fixture
 
   logical function cleanup_fixture(fixture) result(success)
     type(process_fixture), intent(inout) :: fixture
@@ -189,6 +212,66 @@ contains
     res = fixture%last_result
   end function fixture_result
 
+  logical function assert_fixture_success(fixture) result(success)
+    type(process_fixture), intent(inout) :: fixture
+
+    success = fixture%last_result%error_code == FGOF_PROCESS_OK .and. &
+      fixture%last_result%completed .and. &
+      fixture%last_result%exited_normally .and. &
+      fixture%last_result%exit_code == 0
+
+    if (.not. success) then
+      call set_fixture_error(fixture, FGOF_PROC_TEST_ERR_ASSERTION_FAILED, &
+        "fixture did not complete successfully")
+    end if
+  end function assert_fixture_success
+
+  logical function assert_fixture_exit_code(fixture, expected_exit_code) result(success)
+    type(process_fixture), intent(inout) :: fixture
+    integer, intent(in) :: expected_exit_code
+
+    success = fixture%last_result%completed .and. fixture%last_result%exited_normally .and. &
+      fixture%last_result%exit_code == expected_exit_code
+
+    if (.not. success) then
+      call set_fixture_error(fixture, FGOF_PROC_TEST_ERR_ASSERTION_FAILED, &
+        exit_code_message(expected_exit_code, fixture%last_result%exit_code))
+    end if
+  end function assert_fixture_exit_code
+
+  logical function assert_fixture_stdout_contains(fixture, expected_text) result(success)
+    type(process_fixture), intent(inout) :: fixture
+    character(len=*), intent(in) :: expected_text
+
+    success = index(fixture%last_result%stdout, expected_text) > 0
+    if (.not. success) then
+      call set_fixture_error(fixture, FGOF_PROC_TEST_ERR_ASSERTION_FAILED, &
+        "fixture stdout did not contain expected text")
+    end if
+  end function assert_fixture_stdout_contains
+
+  logical function assert_fixture_stderr_contains(fixture, expected_text) result(success)
+    type(process_fixture), intent(inout) :: fixture
+    character(len=*), intent(in) :: expected_text
+
+    success = index(fixture%last_result%stderr, expected_text) > 0
+    if (.not. success) then
+      call set_fixture_error(fixture, FGOF_PROC_TEST_ERR_ASSERTION_FAILED, &
+        "fixture stderr did not contain expected text")
+    end if
+  end function assert_fixture_stderr_contains
+
+  logical function assert_fixture_output_contains(fixture, expected_text) result(success)
+    type(process_fixture), intent(inout) :: fixture
+    character(len=*), intent(in) :: expected_text
+
+    success = index(fixture%last_result%stdout // fixture%last_result%stderr, expected_text) > 0
+    if (.not. success) then
+      call set_fixture_error(fixture, FGOF_PROC_TEST_ERR_ASSERTION_FAILED, &
+        "fixture output did not contain expected text")
+    end if
+  end function assert_fixture_output_contains
+
   function proc_test_backend_name() result(name)
     character(len=:), allocatable :: name
 
@@ -210,6 +293,8 @@ contains
       name = "readiness-failed"
     case (FGOF_PROC_TEST_ERR_CLEANUP_FAILED)
       name = "cleanup-failed"
+    case (FGOF_PROC_TEST_ERR_ASSERTION_FAILED)
+      name = "assertion-failed"
     case (FGOF_PROC_TEST_ERR_INTERNAL)
       name = "internal"
     case default
@@ -230,7 +315,8 @@ contains
     valid = fixture%command%mode /= FGOF_PROCESS_MODE_NONE
     if (.not. valid) return
 
-    valid = fixture%options%timeout_ms >= 0 .and. fixture%options%retries >= 0
+    valid = fixture%options%timeout_ms >= 0 .and. fixture%options%retries >= 0 .and. &
+      fixture%options%retry_delay_ms >= 0
   end function valid_fixture
 
   logical function need_capture(fixture) result(capture)
@@ -375,5 +461,36 @@ contains
       max_len = max(max_len, len(values(i)))
     end do
   end function max_string_length
+
+  function exit_code_message(expected_exit_code, actual_exit_code) result(message)
+    integer, intent(in) :: expected_exit_code
+    integer, intent(in) :: actual_exit_code
+    character(len=:), allocatable :: message
+    character(len=32) :: expected_text
+    character(len=32) :: actual_text
+
+    write(expected_text, '(I0)') expected_exit_code
+    write(actual_text, '(I0)') actual_exit_code
+    message = "expected exit code " // trim(expected_text) // ", got " // trim(actual_text)
+  end function exit_code_message
+
+  subroutine sleep_milliseconds(delay_ms)
+    integer, intent(in) :: delay_ms
+    integer :: start_count
+    integer :: current_count
+    integer :: rate
+    integer :: elapsed_ms
+
+    if (delay_ms <= 0) return
+
+    call system_clock(start_count, rate)
+    if (rate <= 0) return
+
+    do
+      call system_clock(current_count)
+      elapsed_ms = int((real(current_count - start_count) / real(rate)) * 1000.0)
+      if (elapsed_ms >= delay_ms) exit
+    end do
+  end subroutine sleep_milliseconds
 
 end module fgof_proc_test
