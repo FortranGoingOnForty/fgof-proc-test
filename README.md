@@ -36,6 +36,7 @@ Tracked today:
 - `fixture_diagnostics()` for richer failure detail
 - retry-delay support plus `retry_fixture()` convenience
 - tracked examples for setup/cleanup and assertion flows
+- diagnostics include setup, main-command, and cleanup transcript slices
 - initial fixture and options types
 - stable error constants with naming helpers
 - CI and `fpm test` baseline wiring
@@ -144,6 +145,9 @@ Example binaries are also tracked under `example/`:
 
 - `setup_cleanup_demo`
 - `assertion_demo`
+
+CI also executes the tracked examples after the test suite so the documented
+paths stay exercised.
 
 ## Supported Platforms
 

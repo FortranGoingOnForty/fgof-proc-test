@@ -57,4 +57,19 @@ jobs:
           "$CC" --version
 
       - name: Run test suite
-        run: fpm test
+        run: fpm test --verbose
+
+      - name: Run tracked examples
+        shell: bash
+        run: |
+          assertion_demo="$(find build -type f -path '*/example/assertion_demo' | head -n 1)"
+          setup_cleanup_demo="$(find build -type f -path '*/example/setup_cleanup_demo' | head -n 1)"
+
+          test -n "${assertion_demo}"
+          test -n "${setup_cleanup_demo}"
+
+          assertion_output="$("${assertion_demo}")"
+          setup_output="$("${setup_cleanup_demo}")"
+
+          printf '%s\n' "${assertion_output}" | grep -q "ok"
+          printf '%s\n' "${setup_output}" | grep -q "ready"
