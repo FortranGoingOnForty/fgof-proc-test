@@ -13,7 +13,7 @@ Current v1 target:
 
 - build on `fgof-process` instead of re-implementing subprocess control
 - expose fixture options and process-fixture state
-- support stable start, readiness, retry, and cleanup flows
+- support stable setup, start, readiness, retry, and cleanup flows
 - stay focused on process-level testing, not general assertion frameworks
 
 Future scope:
@@ -24,16 +24,18 @@ Future scope:
 
 ## Status
 
-Fixture lifecycle and first assertion layer are in place.
+Fixture lifecycle, setup hooks, and first assertion layer are in place.
 
 Tracked today:
 
 - public `fgof_proc_test` and `fgof_proc_test_types` modules
 - `make_fixture()`, `run_fixture()`, and `cleanup_fixture()` lifecycle helpers
+- optional setup commands plus cleanup-on-failure behavior
 - readiness checks, retry tracking, and captured last-result state
 - assertion helpers for exit codes and output checks
+- `fixture_diagnostics()` for richer failure detail
 - retry-delay support plus `retry_fixture()` convenience
-- cleanup-on-failure behavior for failing fixtures
+- tracked examples for setup/cleanup and assertion flows
 - initial fixture and options types
 - stable error constants with naming helpers
 - CI and `fpm test` baseline wiring
@@ -44,10 +46,12 @@ Tracked today:
 - `fgof-process` now gives us a strong base to build a cleaner fixture layer
 - many integration suites still hand-roll setup, polling, teardown, and cleanup
 - a focused package here can make app and tool testing much less fragile
-- current fixtures work well for one-shot process checks and setup or teardown
-  steps even before `fgof-process` grows async handles
+- current fixtures work well for one-shot process checks and reusable setup or
+  teardown steps even before `fgof-process` grows async handles
 - assertion helpers keep common exit-code and output checks close to the fixture
   state instead of scattering them through each test file
+- diagnostics make failed fixtures much easier to inspect without rebuilding the
+  context in every test
 
 ## Public API Shape
 
@@ -67,6 +71,7 @@ Public constants:
 - `FGOF_PROC_TEST_ERR_INVALID_OPTIONS`
 - `FGOF_PROC_TEST_ERR_SPAWN_FAILED`
 - `FGOF_PROC_TEST_ERR_READINESS_FAILED`
+- `FGOF_PROC_TEST_ERR_SETUP_FAILED`
 - `FGOF_PROC_TEST_ERR_CLEANUP_FAILED`
 - `FGOF_PROC_TEST_ERR_ASSERTION_FAILED`
 - `FGOF_PROC_TEST_ERR_INTERNAL`
@@ -81,6 +86,7 @@ Current public procedures:
 - `cleanup_fixture`
 - `clear_fixture_options`
 - `clear_process_fixture`
+- `fixture_diagnostics`
 - `fixture_ready`
 - `fixture_result`
 - `make_fixture`
@@ -95,7 +101,8 @@ Current public procedures:
 program demo_proc_test
   use fgof_process, only : shell
   use fgof_proc_test, only : &
-    cleanup_fixture, clear_fixture_options, fixture_ready, make_fixture, run_fixture
+    cleanup_fixture, clear_fixture_options, fixture_diagnostics, &
+    fixture_ready, make_fixture, run_fixture
   use fgof_proc_test_types, only : fixture_options, process_fixture
   implicit none
 
@@ -106,9 +113,17 @@ program demo_proc_test
   options%ready_text = "READY"
   options%retry_delay_ms = 10
 
-  fixture = make_fixture("demo", shell("printf READY"), options)
+  fixture = make_fixture( &
+    "demo", &
+    shell("printf READY"), &
+    options, &
+    cleanup_cmd=shell("printf CLEANED >/dev/null"), &
+    setup_cmd=shell("printf MADE >/dev/null"))
+
   if (run_fixture(fixture)) then
     if (fixture_ready(fixture)) print *, "fixture is ready"
+  else
+    print *, trim(fixture_diagnostics(fixture))
   end if
 
   if (.not. cleanup_fixture(fixture)) then
@@ -125,6 +140,11 @@ fpm test
 
 That is the baseline verification command locally and in CI.
 
+Example binaries are also tracked under `example/`:
+
+- `setup_cleanup_demo`
+- `assertion_demo`
+
 ## Supported Platforms
 
 - macOS
@@ -138,8 +158,9 @@ That is the baseline verification command locally and in CI.
 - `fgof-process` remains the subprocess backend underneath this package
 - current fixtures are synchronous and one-shot; persistent daemons and richer
   async supervision should wait for later backend support
-- assertion helpers are intentionally simple string and exit-code checks for now;
-  richer transcript assertions can sit above this package later
+- assertion helpers are intentionally simple string and exit-code checks for now
+- richer transcript assertions and expect-backed fixtures can sit above this
+  package later
 
 ## License
 
