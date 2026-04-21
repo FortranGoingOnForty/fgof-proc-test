@@ -1,8 +1,23 @@
 module fgof_proc_test
+  use fgof_process, only : &
+    FGOF_PROCESS_ERR_EXEC_FAILED, &
+    FGOF_PROCESS_ERR_INTERNAL, &
+    FGOF_PROCESS_ERR_INVALID_COMMAND, &
+    FGOF_PROCESS_ERR_INVALID_OPTION, &
+    FGOF_PROCESS_ERR_PIPE_FAILED, &
+    FGOF_PROCESS_ERR_SPAWN_FAILED, &
+    FGOF_PROCESS_ERR_TIMEOUT, &
+    FGOF_PROCESS_MODE_NONE, &
+    FGOF_PROCESS_OK, &
+    process_command, &
+    process_options, &
+    process_result, &
+    run
   use fgof_proc_test_types, only : &
     FGOF_PROC_TEST_ERR_CLEANUP_FAILED, &
     FGOF_PROC_TEST_ERR_INTERNAL, &
     FGOF_PROC_TEST_ERR_INVALID_OPTIONS, &
+    FGOF_PROC_TEST_ERR_READINESS_FAILED, &
     FGOF_PROC_TEST_ERR_SPAWN_FAILED, &
     FGOF_PROC_TEST_OK, &
     fixture_options, &
@@ -14,14 +29,20 @@ module fgof_proc_test
     FGOF_PROC_TEST_ERR_CLEANUP_FAILED, &
     FGOF_PROC_TEST_ERR_INTERNAL, &
     FGOF_PROC_TEST_ERR_INVALID_OPTIONS, &
+    FGOF_PROC_TEST_ERR_READINESS_FAILED, &
     FGOF_PROC_TEST_ERR_SPAWN_FAILED, &
     FGOF_PROC_TEST_OK, &
+    cleanup_fixture, &
     clear_fixture_options, &
     clear_process_fixture, &
+    fixture_ready, &
+    fixture_result, &
     fixture_options, &
-    process_fixture, &
+    make_fixture, &
     proc_test_backend_name, &
-    proc_test_error_name
+    proc_test_error_name, &
+    process_fixture, &
+    run_fixture
 
 contains
 
@@ -32,16 +53,141 @@ contains
     options%retries = 0
     options%capture_output = .true.
     options%cleanup_on_failure = .true.
+    allocate(character(len=1) :: options%env_set(0))
+    allocate(character(len=1) :: options%env_unset(0))
   end function clear_fixture_options
 
   function clear_process_fixture() result(fixture)
     type(process_fixture) :: fixture
 
     fixture%active = .false.
+    fixture%ready = .false.
+    fixture%cleaned_up = .false.
+    fixture%attempts = 0
     fixture%error_code = FGOF_PROC_TEST_OK
     fixture%error_message = ""
     fixture%name = ""
+    fixture%options = clear_fixture_options()
+    fixture%command%mode = FGOF_PROCESS_MODE_NONE
+    fixture%cleanup_command%mode = FGOF_PROCESS_MODE_NONE
+    fixture%last_result = clear_process_result()
+    fixture%cleanup_result = clear_process_result()
   end function clear_process_fixture
+
+  function make_fixture(name, cmd, options, cleanup_cmd) result(fixture)
+    character(len=*), intent(in) :: name
+    type(process_command), intent(in) :: cmd
+    type(fixture_options), intent(in), optional :: options
+    type(process_command), intent(in), optional :: cleanup_cmd
+    type(process_fixture) :: fixture
+
+    fixture = clear_process_fixture()
+    fixture%name = name
+    fixture%command = cmd
+    if (present(options)) fixture%options = options
+    if (present(cleanup_cmd)) fixture%cleanup_command = cleanup_cmd
+  end function make_fixture
+
+  logical function run_fixture(fixture) result(success)
+    type(process_fixture), intent(inout) :: fixture
+    type(process_options) :: run_options
+    integer :: attempt
+    integer :: max_attempts
+    logical :: cleanup_ok
+
+    call clear_fixture_error(fixture)
+    fixture%active = .false.
+    fixture%ready = .false.
+    fixture%cleaned_up = .false.
+    fixture%attempts = 0
+    fixture%last_result = clear_process_result()
+    fixture%cleanup_result = clear_process_result()
+
+    if (.not. valid_fixture(fixture)) then
+      call set_fixture_error(fixture, FGOF_PROC_TEST_ERR_INVALID_OPTIONS, &
+        "fixture must provide a name, command, and valid options")
+      success = .false.
+      return
+    end if
+
+    run_options = build_process_options(fixture%options, need_capture(fixture))
+    max_attempts = fixture%options%retries + 1
+    success = .false.
+
+    do attempt = 1, max_attempts
+      fixture%attempts = attempt
+      fixture%last_result = run(fixture%command, run_options)
+
+      if (fixture%last_result%error_code == FGOF_PROCESS_OK) then
+        if (fixture%last_result%completed .and. fixture%last_result%exited_normally .and. &
+            fixture%last_result%exit_code == 0) then
+          if (matches_readiness(fixture, fixture%last_result)) then
+            fixture%ready = .true.
+            fixture%active = .true.
+            success = .true.
+            return
+          end if
+
+          call set_fixture_error(fixture, FGOF_PROC_TEST_ERR_READINESS_FAILED, &
+            "fixture output did not satisfy readiness checks")
+        else
+          call set_fixture_error(fixture, FGOF_PROC_TEST_ERR_SPAWN_FAILED, &
+            "fixture command exited unsuccessfully")
+        end if
+      else
+        call map_process_error(fixture, fixture%last_result)
+      end if
+    end do
+
+    if (fixture%options%cleanup_on_failure) cleanup_ok = cleanup_fixture(fixture)
+  end function run_fixture
+
+  logical function cleanup_fixture(fixture) result(success)
+    type(process_fixture), intent(inout) :: fixture
+    type(process_options) :: cleanup_options
+
+    if (fixture%cleanup_command%mode == FGOF_PROCESS_MODE_NONE) then
+      fixture%cleaned_up = .true.
+      fixture%active = .false.
+      success = .true.
+      return
+    end if
+
+    cleanup_options = build_process_options(fixture%options, .true.)
+    fixture%cleanup_result = run(fixture%cleanup_command, cleanup_options)
+    fixture%cleaned_up = .true.
+    fixture%active = .false.
+
+    if (fixture%cleanup_result%error_code /= FGOF_PROCESS_OK) then
+      call set_fixture_error(fixture, FGOF_PROC_TEST_ERR_CLEANUP_FAILED, &
+        cleanup_message("cleanup process reported a backend error", fixture%cleanup_result))
+      success = .false.
+      return
+    end if
+
+    if (.not. fixture%cleanup_result%completed .or. .not. fixture%cleanup_result%exited_normally .or. &
+        fixture%cleanup_result%exit_code /= 0) then
+      call set_fixture_error(fixture, FGOF_PROC_TEST_ERR_CLEANUP_FAILED, &
+        "cleanup command exited unsuccessfully")
+      success = .false.
+      return
+    end if
+
+    success = .true.
+  end function cleanup_fixture
+
+  logical function fixture_ready(fixture) result(ready)
+    type(process_fixture), intent(in) :: fixture
+
+    ready = fixture%active .and. fixture%ready
+  end function fixture_ready
+
+  function fixture_result(fixture) result(res)
+    type(process_fixture), intent(in) :: fixture
+    type(process_result) :: res
+
+    res = fixture%last_result
+  end function fixture_result
 
   function proc_test_backend_name() result(name)
     character(len=:), allocatable :: name
@@ -60,6 +206,8 @@ contains
       name = "invalid-options"
     case (FGOF_PROC_TEST_ERR_SPAWN_FAILED)
       name = "spawn-failed"
+    case (FGOF_PROC_TEST_ERR_READINESS_FAILED)
+      name = "readiness-failed"
     case (FGOF_PROC_TEST_ERR_CLEANUP_FAILED)
       name = "cleanup-failed"
     case (FGOF_PROC_TEST_ERR_INTERNAL)
@@ -68,5 +216,164 @@ contains
       name = "unknown"
     end select
   end function proc_test_error_name
+
+  logical function valid_fixture(fixture) result(valid)
+    type(process_fixture), intent(in) :: fixture
+
+    valid = allocated(fixture%name)
+    if (.not. valid) return
+    if (len_trim(fixture%name) == 0) then
+      valid = .false.
+      return
+    end if
+
+    valid = fixture%command%mode /= FGOF_PROCESS_MODE_NONE
+    if (.not. valid) return
+
+    valid = fixture%options%timeout_ms >= 0 .and. fixture%options%retries >= 0
+  end function valid_fixture
+
+  logical function need_capture(fixture) result(capture)
+    type(process_fixture), intent(in) :: fixture
+
+    capture = fixture%options%capture_output
+    if (allocated(fixture%options%ready_text)) then
+      capture = capture .or. len(fixture%options%ready_text) > 0
+    end if
+  end function need_capture
+
+  logical function matches_readiness(fixture, res) result(matches)
+    type(process_fixture), intent(in) :: fixture
+    type(process_result), intent(in) :: res
+    character(len=:), allocatable :: text
+
+    if (.not. allocated(fixture%options%ready_text)) then
+      matches = .true.
+      return
+    end if
+
+    if (len(fixture%options%ready_text) == 0) then
+      matches = .true.
+      return
+    end if
+
+    text = res%stdout // res%stderr
+    matches = index(text, fixture%options%ready_text) > 0
+  end function matches_readiness
+
+  function build_process_options(options, capture_output) result(proc_options)
+    type(fixture_options), intent(in) :: options
+    logical, intent(in) :: capture_output
+    type(process_options) :: proc_options
+    integer :: item_len
+    integer :: i
+
+    proc_options%timeout_ms = options%timeout_ms
+    proc_options%capture_stdout = capture_output
+    proc_options%capture_stderr = capture_output
+
+    if (allocated(options%cwd)) then
+      if (len(options%cwd) > 0) proc_options%cwd = options%cwd
+    end if
+
+    if (allocated(options%env_set)) then
+      item_len = max_string_length(options%env_set)
+      allocate(character(len=item_len) :: proc_options%env_set(size(options%env_set)))
+      do i = 1, size(options%env_set)
+        proc_options%env_set(i) = options%env_set(i)
+      end do
+    end if
+
+    if (allocated(options%env_unset)) then
+      item_len = max_string_length(options%env_unset)
+      allocate(character(len=item_len) :: proc_options%env_unset(size(options%env_unset)))
+      do i = 1, size(options%env_unset)
+        proc_options%env_unset(i) = options%env_unset(i)
+      end do
+    end if
+  end function build_process_options
+
+  subroutine clear_fixture_error(fixture)
+    type(process_fixture), intent(inout) :: fixture
+
+    fixture%error_code = FGOF_PROC_TEST_OK
+    fixture%error_message = ""
+  end subroutine clear_fixture_error
+
+  subroutine set_fixture_error(fixture, code, message)
+    type(process_fixture), intent(inout) :: fixture
+    integer, intent(in) :: code
+    character(len=*), intent(in) :: message
+
+    fixture%error_code = code
+    fixture%error_message = message
+  end subroutine set_fixture_error
+
+  subroutine map_process_error(fixture, res)
+    type(process_fixture), intent(inout) :: fixture
+    type(process_result), intent(in) :: res
+
+    select case (res%error_code)
+    case (FGOF_PROCESS_ERR_INVALID_COMMAND, FGOF_PROCESS_ERR_INVALID_OPTION)
+      call set_fixture_error(fixture, FGOF_PROC_TEST_ERR_INVALID_OPTIONS, process_message(res))
+    case (FGOF_PROCESS_ERR_SPAWN_FAILED, FGOF_PROCESS_ERR_EXEC_FAILED, FGOF_PROCESS_ERR_PIPE_FAILED, &
+          FGOF_PROCESS_ERR_TIMEOUT)
+      call set_fixture_error(fixture, FGOF_PROC_TEST_ERR_SPAWN_FAILED, process_message(res))
+    case (FGOF_PROCESS_ERR_INTERNAL)
+      call set_fixture_error(fixture, FGOF_PROC_TEST_ERR_INTERNAL, process_message(res))
+    case default
+      call set_fixture_error(fixture, FGOF_PROC_TEST_ERR_INTERNAL, process_message(res))
+    end select
+  end subroutine map_process_error
+
+  function process_message(res) result(message)
+    type(process_result), intent(in) :: res
+    character(len=:), allocatable :: message
+
+    if (allocated(res%error_message)) then
+      if (len(res%error_message) > 0) then
+        message = res%error_message
+        return
+      end if
+    end if
+
+    message = "process backend reported an error"
+  end function process_message
+
+  function cleanup_message(prefix, res) result(message)
+    character(len=*), intent(in) :: prefix
+    type(process_result), intent(in) :: res
+    character(len=:), allocatable :: message
+    character(len=:), allocatable :: detail
+
+    detail = process_message(res)
+    message = prefix // ": " // detail
+  end function cleanup_message
+
+  function clear_process_result() result(res)
+    type(process_result) :: res
+
+    res%launched = .false.
+    res%completed = .false.
+    res%timed_out = .false.
+    res%exited_normally = .false.
+    res%exit_code = -1
+    res%term_signal = 0
+    res%stdout = ""
+    res%stderr = ""
+    res%error_code = FGOF_PROCESS_OK
+    res%error_message = ""
+    res%elapsed_ms = 0
+  end function clear_process_result
+
+  integer function max_string_length(values) result(max_len)
+    character(len=*), intent(in) :: values(:)
+    integer :: i
+
+    max_len = 1
+    do i = 1, size(values)
+      max_len = max(max_len, len(values(i)))
+    end do
+  end function max_string_length
 
 end module fgof_proc_test
