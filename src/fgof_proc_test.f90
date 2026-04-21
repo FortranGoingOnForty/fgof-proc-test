@@ -19,6 +19,7 @@ module fgof_proc_test
     FGOF_PROC_TEST_ERR_INTERNAL, &
     FGOF_PROC_TEST_ERR_INVALID_OPTIONS, &
     FGOF_PROC_TEST_ERR_READINESS_FAILED, &
+    FGOF_PROC_TEST_ERR_SETUP_FAILED, &
     FGOF_PROC_TEST_ERR_SPAWN_FAILED, &
     FGOF_PROC_TEST_OK, &
     fixture_options, &
@@ -32,6 +33,7 @@ module fgof_proc_test
     FGOF_PROC_TEST_ERR_INTERNAL, &
     FGOF_PROC_TEST_ERR_INVALID_OPTIONS, &
     FGOF_PROC_TEST_ERR_READINESS_FAILED, &
+    FGOF_PROC_TEST_ERR_SETUP_FAILED, &
     FGOF_PROC_TEST_ERR_SPAWN_FAILED, &
     FGOF_PROC_TEST_OK, &
     assert_fixture_exit_code, &
@@ -42,6 +44,7 @@ module fgof_proc_test
     cleanup_fixture, &
     clear_fixture_options, &
     clear_process_fixture, &
+    fixture_diagnostics, &
     fixture_ready, &
     fixture_result, &
     fixture_options, &
@@ -71,6 +74,7 @@ contains
 
     fixture%active = .false.
     fixture%ready = .false.
+    fixture%setup_completed = .false.
     fixture%cleaned_up = .false.
     fixture%attempts = 0
     fixture%error_code = FGOF_PROC_TEST_OK
@@ -78,16 +82,19 @@ contains
     fixture%name = ""
     fixture%options = clear_fixture_options()
     fixture%command%mode = FGOF_PROCESS_MODE_NONE
+    fixture%setup_command%mode = FGOF_PROCESS_MODE_NONE
     fixture%cleanup_command%mode = FGOF_PROCESS_MODE_NONE
+    fixture%setup_result = clear_process_result()
     fixture%last_result = clear_process_result()
     fixture%cleanup_result = clear_process_result()
   end function clear_process_fixture
 
-  function make_fixture(name, cmd, options, cleanup_cmd) result(fixture)
+  function make_fixture(name, cmd, options, cleanup_cmd, setup_cmd) result(fixture)
     character(len=*), intent(in) :: name
     type(process_command), intent(in) :: cmd
     type(fixture_options), intent(in), optional :: options
     type(process_command), intent(in), optional :: cleanup_cmd
+    type(process_command), intent(in), optional :: setup_cmd
     type(process_fixture) :: fixture
 
     fixture = clear_process_fixture()
@@ -95,6 +102,7 @@ contains
     fixture%command = cmd
     if (present(options)) fixture%options = options
     if (present(cleanup_cmd)) fixture%cleanup_command = cleanup_cmd
+    if (present(setup_cmd)) fixture%setup_command = setup_cmd
   end function make_fixture
 
   logical function run_fixture(fixture) result(success)
@@ -107,8 +115,10 @@ contains
     call clear_fixture_error(fixture)
     fixture%active = .false.
     fixture%ready = .false.
+    fixture%setup_completed = .false.
     fixture%cleaned_up = .false.
     fixture%attempts = 0
+    fixture%setup_result = clear_process_result()
     fixture%last_result = clear_process_result()
     fixture%cleanup_result = clear_process_result()
 
@@ -125,6 +135,17 @@ contains
 
     do attempt = 1, max_attempts
       fixture%attempts = attempt
+      fixture%setup_completed = .false.
+      fixture%setup_result = clear_process_result()
+      fixture%last_result = clear_process_result()
+
+      if (.not. run_setup_step(fixture)) then
+        if (attempt < max_attempts .and. fixture%options%retry_delay_ms > 0) then
+          call sleep_milliseconds(fixture%options%retry_delay_ms)
+        end if
+        cycle
+      end if
+
       fixture%last_result = run(fixture%command, run_options)
 
       if (fixture%last_result%error_code == FGOF_PROCESS_OK) then
@@ -169,6 +190,12 @@ contains
     type(process_fixture), intent(inout) :: fixture
     type(process_options) :: cleanup_options
 
+    if (fixture%cleaned_up) then
+      fixture%active = .false.
+      success = .true.
+      return
+    end if
+
     if (fixture%cleanup_command%mode == FGOF_PROCESS_MODE_NONE) then
       fixture%cleaned_up = .true.
       fixture%active = .false.
@@ -212,6 +239,26 @@ contains
     res = fixture%last_result
   end function fixture_result
 
+  function fixture_diagnostics(fixture) result(text)
+    type(process_fixture), intent(in) :: fixture
+    character(len=:), allocatable :: text
+    character(len=*), parameter :: nl = new_line('a')
+
+    text = "fixture=" // fixture_name(fixture) // nl // &
+      "error=" // proc_test_error_name(fixture%error_code) // nl // &
+      "message=" // fixture_message_text(fixture) // nl // &
+      "attempts=" // int_text(fixture%attempts) // nl // &
+      "ready=" // logical_text(fixture%ready) // nl // &
+      "active=" // logical_text(fixture%active) // nl // &
+      "setup_completed=" // logical_text(fixture%setup_completed) // nl // &
+      "cleaned_up=" // logical_text(fixture%cleaned_up) // nl // &
+      "setup_exit_code=" // int_text(fixture%setup_result%exit_code) // nl // &
+      "last_exit_code=" // int_text(fixture%last_result%exit_code) // nl // &
+      "cleanup_exit_code=" // int_text(fixture%cleanup_result%exit_code) // nl // &
+      "stdout=" // fixture%last_result%stdout // nl // &
+      "stderr=" // fixture%last_result%stderr
+  end function fixture_diagnostics
+
   logical function assert_fixture_success(fixture) result(success)
     type(process_fixture), intent(inout) :: fixture
 
@@ -222,7 +269,7 @@ contains
 
     if (.not. success) then
       call set_fixture_error(fixture, FGOF_PROC_TEST_ERR_ASSERTION_FAILED, &
-        "fixture did not complete successfully")
+        assertion_message("fixture did not complete successfully", fixture))
     end if
   end function assert_fixture_success
 
@@ -235,7 +282,7 @@ contains
 
     if (.not. success) then
       call set_fixture_error(fixture, FGOF_PROC_TEST_ERR_ASSERTION_FAILED, &
-        exit_code_message(expected_exit_code, fixture%last_result%exit_code))
+        assertion_message(exit_code_message(expected_exit_code, fixture%last_result%exit_code), fixture))
     end if
   end function assert_fixture_exit_code
 
@@ -246,7 +293,7 @@ contains
     success = index(fixture%last_result%stdout, expected_text) > 0
     if (.not. success) then
       call set_fixture_error(fixture, FGOF_PROC_TEST_ERR_ASSERTION_FAILED, &
-        "fixture stdout did not contain expected text")
+        assertion_message("fixture stdout did not contain expected text", fixture))
     end if
   end function assert_fixture_stdout_contains
 
@@ -257,7 +304,7 @@ contains
     success = index(fixture%last_result%stderr, expected_text) > 0
     if (.not. success) then
       call set_fixture_error(fixture, FGOF_PROC_TEST_ERR_ASSERTION_FAILED, &
-        "fixture stderr did not contain expected text")
+        assertion_message("fixture stderr did not contain expected text", fixture))
     end if
   end function assert_fixture_stderr_contains
 
@@ -268,7 +315,7 @@ contains
     success = index(fixture%last_result%stdout // fixture%last_result%stderr, expected_text) > 0
     if (.not. success) then
       call set_fixture_error(fixture, FGOF_PROC_TEST_ERR_ASSERTION_FAILED, &
-        "fixture output did not contain expected text")
+        assertion_message("fixture output did not contain expected text", fixture))
     end if
   end function assert_fixture_output_contains
 
@@ -291,6 +338,8 @@ contains
       name = "spawn-failed"
     case (FGOF_PROC_TEST_ERR_READINESS_FAILED)
       name = "readiness-failed"
+    case (FGOF_PROC_TEST_ERR_SETUP_FAILED)
+      name = "setup-failed"
     case (FGOF_PROC_TEST_ERR_CLEANUP_FAILED)
       name = "cleanup-failed"
     case (FGOF_PROC_TEST_ERR_ASSERTION_FAILED)
@@ -346,6 +395,38 @@ contains
     text = res%stdout // res%stderr
     matches = index(text, fixture%options%ready_text) > 0
   end function matches_readiness
+
+  logical function run_setup_step(fixture) result(success)
+    type(process_fixture), intent(inout) :: fixture
+    type(process_options) :: setup_options
+
+    if (fixture%setup_command%mode == FGOF_PROCESS_MODE_NONE) then
+      fixture%setup_completed = .true.
+      success = .true.
+      return
+    end if
+
+    setup_options = build_process_options(fixture%options, .true.)
+    fixture%setup_result = run(fixture%setup_command, setup_options)
+
+    if (fixture%setup_result%error_code /= FGOF_PROCESS_OK) then
+      call set_fixture_error(fixture, FGOF_PROC_TEST_ERR_SETUP_FAILED, &
+        setup_message("setup process reported a backend error", fixture%setup_result))
+      success = .false.
+      return
+    end if
+
+    if (.not. fixture%setup_result%completed .or. .not. fixture%setup_result%exited_normally .or. &
+        fixture%setup_result%exit_code /= 0) then
+      call set_fixture_error(fixture, FGOF_PROC_TEST_ERR_SETUP_FAILED, &
+        "setup command exited unsuccessfully")
+      success = .false.
+      return
+    end if
+
+    fixture%setup_completed = .true.
+    success = .true.
+  end function run_setup_step
 
   function build_process_options(options, capture_output) result(proc_options)
     type(fixture_options), intent(in) :: options
@@ -436,6 +517,16 @@ contains
     message = prefix // ": " // detail
   end function cleanup_message
 
+  function setup_message(prefix, res) result(message)
+    character(len=*), intent(in) :: prefix
+    type(process_result), intent(in) :: res
+    character(len=:), allocatable :: message
+    character(len=:), allocatable :: detail
+
+    detail = process_message(res)
+    message = prefix // ": " // detail
+  end function setup_message
+
   function clear_process_result() result(res)
     type(process_result) :: res
 
@@ -473,6 +564,57 @@ contains
     write(actual_text, '(I0)') actual_exit_code
     message = "expected exit code " // trim(expected_text) // ", got " // trim(actual_text)
   end function exit_code_message
+
+  function assertion_message(prefix, fixture) result(message)
+    character(len=*), intent(in) :: prefix
+    type(process_fixture), intent(in) :: fixture
+    character(len=:), allocatable :: message
+    character(len=*), parameter :: nl = new_line('a')
+
+    message = prefix // nl // fixture_diagnostics(fixture)
+  end function assertion_message
+
+  function fixture_name(fixture) result(name)
+    type(process_fixture), intent(in) :: fixture
+    character(len=:), allocatable :: name
+
+    if (allocated(fixture%name)) then
+      name = fixture%name
+    else
+      name = ""
+    end if
+  end function fixture_name
+
+  function fixture_message_text(fixture) result(message)
+    type(process_fixture), intent(in) :: fixture
+    character(len=:), allocatable :: message
+
+    if (allocated(fixture%error_message)) then
+      message = fixture%error_message
+    else
+      message = ""
+    end if
+  end function fixture_message_text
+
+  function int_text(value) result(text)
+    integer, intent(in) :: value
+    character(len=:), allocatable :: text
+    character(len=32) :: buffer
+
+    write(buffer, '(I0)') value
+    text = trim(buffer)
+  end function int_text
+
+  function logical_text(value) result(text)
+    logical, intent(in) :: value
+    character(len=:), allocatable :: text
+
+    if (value) then
+      text = "true"
+    else
+      text = "false"
+    end if
+  end function logical_text
 
   subroutine sleep_milliseconds(delay_ms)
     integer, intent(in) :: delay_ms

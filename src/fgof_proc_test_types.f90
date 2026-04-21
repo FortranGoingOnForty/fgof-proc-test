@@ -11,6 +11,7 @@ module fgof_proc_test_types
   integer, parameter, public :: FGOF_PROC_TEST_ERR_SPAWN_FAILED = 20
   integer, parameter, public :: FGOF_PROC_TEST_ERR_READINESS_FAILED = 21
   integer, parameter, public :: FGOF_PROC_TEST_ERR_CLEANUP_FAILED = 22
+  integer, parameter, public :: FGOF_PROC_TEST_ERR_SETUP_FAILED = 23
   integer, parameter, public :: FGOF_PROC_TEST_ERR_ASSERTION_FAILED = 30
   integer, parameter, public :: FGOF_PROC_TEST_ERR_INTERNAL = 99
 
@@ -29,6 +30,7 @@ module fgof_proc_test_types
   type, public :: process_fixture
     logical :: active = .false.
     logical :: ready = .false.
+    logical :: setup_completed = .false.
     logical :: cleaned_up = .false.
     integer :: attempts = 0
     integer :: error_code = FGOF_PROC_TEST_OK
@@ -36,7 +38,9 @@ module fgof_proc_test_types
     character(len=:), allocatable :: name
     type(fixture_options) :: options
     type(process_command) :: command
+    type(process_command) :: setup_command
     type(process_command) :: cleanup_command
+    type(process_result) :: setup_result
     type(process_result) :: last_result
     type(process_result) :: cleanup_result
   end type process_fixture
